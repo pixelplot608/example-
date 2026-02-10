@@ -84,7 +84,7 @@ We have **two contributors**:
 - **You + this AI (Cursor agent A)** – focus on backend logic, core algorithms, and cross‑page wiring.
 - **Your friend + their Cursor (agent B)** – focus on data, content, and UI/UX polish.
 
-#### Agent A (you + this AI) – responsibilities
+#### Agent A (you + this AI) – **backend owner**
 
 - **Backend & APIs**
   - Keep `backend/app/main.py`, `auth.py`, `db.py` as the **single source of truth** for APIs.
@@ -99,7 +99,7 @@ We have **two contributors**:
 - **Documentation for other agents**
   - Update this README when backend endpoints or contracts change so agent B always knows what is safe to call.
 
-#### Agent B (friend + their AI) – responsibilities
+#### Agent B (your friend + their AI) – **frontend owner**
 
 - **Frontend UI/UX (React/Vite)**
   - Work only inside `frontend/`.
