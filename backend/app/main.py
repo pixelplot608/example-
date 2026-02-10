@@ -23,62 +23,111 @@ load_dotenv()
 
 
 # --------------------------------------------------------------------------------------
-# In‑memory demo data
+# In‑memory demo data (Chennai‑centric example)
 # --------------------------------------------------------------------------------------
 
+# These regions roughly correspond to different parts of Chennai so the
+# Access & Inequality, Demand & Overload, Planning, and Mobile Units
+# views are all anchored around your city instead of Bengaluru.
+
 REGIONS: List[Dict[str, Any]] = [
-    {"id": "R1", "name": "Central District", "country_code": "IN", "population": 250_000, "lat": 12.9716, "lon": 77.5946},
-    {"id": "R2", "name": "North District", "country_code": "IN", "population": 180_000, "lat": 13.0500, "lon": 77.5800},
-    {"id": "R3", "name": "East District", "country_code": "IN", "population": 320_000, "lat": 12.9850, "lon": 77.7000},
-    {"id": "R4", "name": "South District", "country_code": "IN", "population": 150_000, "lat": 12.8800, "lon": 77.5800},
-    {"id": "R5", "name": "West District", "country_code": "IN", "population": 210_000, "lat": 12.9900, "lon": 77.4800},
+    # Central Chennai
+    {"id": "R1", "name": "Central Chennai", "country_code": "IN", "population": 350_000, "lat": 13.0827, "lon": 80.2707},
+    # North / industrial belt
+    {"id": "R2", "name": "North Chennai", "country_code": "IN", "population": 280_000, "lat": 13.1300, "lon": 80.2900},
+    # IT corridor – OMR / Sholinganallur
+    {"id": "R3", "name": "South IT Corridor", "country_code": "IN", "population": 420_000, "lat": 12.9000, "lon": 80.2270},
+    # Tambaram / south suburban
+    {"id": "R4", "name": "Tambaram Zone", "country_code": "IN", "population": 260_000, "lat": 12.9229, "lon": 80.1275},
+    # West – Koyambedu / Vadapalani
+    {"id": "R5", "name": "West Chennai", "country_code": "IN", "population": 300_000, "lat": 13.0700, "lon": 80.2000},
+    # North‑east coastal – Ennore
+    {"id": "R6", "name": "Ennore Coastal", "country_code": "IN", "population": 180_000, "lat": 13.2160, "lon": 80.3200},
+    # South‑east coastal – ECR
+    {"id": "R7", "name": "ECR Coastal Belt", "country_code": "IN", "population": 220_000, "lat": 12.8700, "lon": 80.2600},
 ]
 
 FACILITIES: List[Dict[str, Any]] = [
     {
         "id": "F1",
-        "name": "Central General Hospital",
+        "name": "Chennai Central General Hospital",
         "facility_type": "hospital",
         "region_id": "R1",
-        "latitude": 12.9716,
-        "longitude": 77.5946,
-        "bed_capacity": 300,
+        "latitude": 13.0760,
+        "longitude": 80.2600,
+        "bed_capacity": 400,
     },
     {
         "id": "F2",
-        "name": "North Community Clinic",
-        "facility_type": "clinic",
-        "region_id": "R2",
-        "latitude": 13.0500,
-        "longitude": 77.5800,
-        "bed_capacity": 40,
-    },
-    {
-        "id": "F3",
-        "name": "East Referral Hospital",
+        "name": "Egmore Women & Children Hospital",
         "facility_type": "hospital",
-        "region_id": "R3",
-        "latitude": 12.9850,
-        "longitude": 77.7000,
+        "region_id": "R1",
+        "latitude": 13.0740,
+        "longitude": 80.2615,
         "bed_capacity": 220,
     },
     {
-        "id": "F4",
-        "name": "South Primary Health Center",
+        "id": "F3",
+        "name": "North Chennai Community Clinic",
         "facility_type": "clinic",
-        "region_id": "R4",
-        "latitude": 12.8800,
-        "longitude": 77.5800,
-        "bed_capacity": 25,
+        "region_id": "R2",
+        "latitude": 13.1400,
+        "longitude": 80.2900,
+        "bed_capacity": 60,
+    },
+    {
+        "id": "F4",
+        "name": "Ennore Coastal Health Centre",
+        "facility_type": "clinic",
+        "region_id": "R6",
+        "latitude": 13.2200,
+        "longitude": 80.3200,
+        "bed_capacity": 40,
     },
     {
         "id": "F5",
-        "name": "West District Hospital",
+        "name": "OMR Multi‑Speciality Hospital",
+        "facility_type": "hospital",
+        "region_id": "R3",
+        "latitude": 12.9100,
+        "longitude": 80.2270,
+        "bed_capacity": 350,
+    },
+    {
+        "id": "F6",
+        "name": "Sholinganallur Urban Clinic",
+        "facility_type": "clinic",
+        "region_id": "R3",
+        "latitude": 12.9000,
+        "longitude": 80.2200,
+        "bed_capacity": 50,
+    },
+    {
+        "id": "F7",
+        "name": "Tambaram District Hospital",
+        "facility_type": "hospital",
+        "region_id": "R4",
+        "latitude": 12.9250,
+        "longitude": 80.1275,
+        "bed_capacity": 280,
+    },
+    {
+        "id": "F8",
+        "name": "West Chennai Medical Centre",
         "facility_type": "hospital",
         "region_id": "R5",
-        "latitude": 12.9900,
-        "longitude": 77.4800,
-        "bed_capacity": 180,
+        "latitude": 13.0700,
+        "longitude": 80.2000,
+        "bed_capacity": 260,
+    },
+    {
+        "id": "F9",
+        "name": "ECR Coastal Clinic",
+        "facility_type": "clinic",
+        "region_id": "R7",
+        "latitude": 12.8750,
+        "longitude": 80.2550,
+        "bed_capacity": 45,
     },
 ]
 
@@ -438,12 +487,24 @@ def planning_facility(
 
 
 @app.get("/planning/mobile-routes")
-def planning_mobile_routes(num_vehicles: int = 2, _: Optional[dict] = Depends(get_current_user_optional)):
-    num_vehicles = max(1, min(num_vehicles, len(REGIONS)))
+def planning_mobile_routes(
+    num_vehicles: int = 2,
+    depot_facility_id: Optional[str] = None,
+    _: Optional[dict] = Depends(get_current_user_optional),
+):
+    """
+    Simple mobile routing demo.
+
+    - num_vehicles: how many vehicles to route (clamped to number of regions).
+    - depot_facility_id: optional facility ID to use as the depot; if omitted
+      or invalid, the first facility in FACILITIES is used.
+    """
     if not FACILITIES or not REGIONS:
         return {"depot_lat": 0.0, "depot_lon": 0.0, "routes": []}
 
-    depot = FACILITIES[0]
+    num_vehicles = max(1, min(num_vehicles, len(REGIONS)))
+
+    depot = next((f for f in FACILITIES if depot_facility_id and f["id"] == depot_facility_id), FACILITIES[0])
     depot_lat, depot_lon = depot["latitude"], depot["longitude"]
 
     # simple round‑robin assignment of regions to vehicles (excluding depot region if present)
@@ -506,13 +567,19 @@ def get_scenario(scenario_id: str, _: Optional[dict] = Depends(get_current_user_
 @app.post("/scenarios")
 def create_scenario(payload: Dict[str, Any], user: Optional[dict] = Depends(get_current_user_optional)):
     sid = str(uuid.uuid4())
+    # NOTE:
+    # - `get_current_user_optional` returns `None` when there is no valid auth token.
+    # - In that case we still want to allow creating scenarios (for local/demo use),
+    #   but we must guard against calling `.get(...)` on `None`.
+    # - Previously this raised `AttributeError`, triggering the global
+    #   exception handler and returning a 503, so scenarios were never saved.
     scenario = {
         "id": sid,
         "name": payload.get("name", "Untitled scenario"),
         "description": payload.get("description"),
         "type": payload.get("type", "facility_plan"),
         "created_at": datetime.utcnow().isoformat() + "Z",
-        "created_by": user.get("sub"),
+        "created_by": user.get("sub") if user else None,
         "results_summary": payload.get("results_summary"),
         "facility_results": payload.get("facility_results"),
         "route_results": payload.get("route_results"),

@@ -74,6 +74,29 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T | nul
   }
 }
 
+function toNum(v: unknown, fallback: number = 0): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : fallback
+}
+
+function formatKm(v: number): string {
+  if (!Number.isFinite(v)) return '—'
+  return `${v.toFixed(1)} km`
+}
+
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371
+  const dLat = ((lat2 - lat1) * Math.PI) / 180
+  const dLon = ((lon2 - lon1) * Math.PI) / 180
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2)
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+  return R * c
+}
+
 function accessScoreToColor(score: number): string {
   const hue = Math.round(120 * score)
   return `hsl(${hue}, 70%, 42%)`
@@ -147,7 +170,8 @@ async function initMapIfNeeded() {
   const container = document.getElementById('map-container')
   if (!container || !window.L) return
   if (!mapInstance) {
-    mapInstance = window.L.map('map-container').setView([20, 0], 2)
+    // Start centred roughly on Chennai; Leaflet will then zoom/fit to data.
+    mapInstance = window.L.map('map-container').setView([13.0827, 80.2707], 11)
     window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
     }).addTo(mapInstance)
@@ -338,26 +362,45 @@ const ROUTE_COLORS = ['#22c55e', '#3b82f6', '#a855f7', '#eab308']
 
 async function initMobileIfNeeded() {
   const runBtn = document.getElementById('mobile-run-btn')
-  const numVehiclesEl = document.getElementById('mobile-num-vehicles') as HTMLSelectElement | null
+  const numVehiclesEl = document.getElementById('mobile-num-vehicles') as HTMLInputElement | null
+  const depotSelectEl = document.getElementById('mobile-depot') as HTMLSelectElement | null
   if (!runBtn || !numVehiclesEl) return
+
+  // Populate depot facilities once
+  if (depotSelectEl && !depotSelectEl.getAttribute('data-loaded')) {
+    const facilities = await fetchJson<Facility[]>(`${API_BASE}/facilities`)
+    if (facilities?.length) {
+      const opts = facilities
+        .map((f) => `<option value="${f.id}">${f.name} (${f.facility_type})</option>`)
+        .join('')
+      depotSelectEl.innerHTML = '<option value="">Default (first facility)</option>' + opts
+    }
+    depotSelectEl.setAttribute('data-loaded', 'true')
+  }
+
   if (!runBtn.getAttribute('data-wired')) {
     runBtn.addEventListener('click', async () => {
-      const numVehicles = Number(numVehiclesEl.value || '2')
-      await runMobileRoutes(numVehicles)
+      const raw = numVehiclesEl.value || '2'
+      const num = Number(raw)
+      const numVehicles = Math.max(1, Math.min(10, Number.isFinite(num) ? num : 2))
+      const depotId = depotSelectEl?.value || ''
+      await runMobileRoutes(numVehicles, depotId || undefined)
     })
     runBtn.setAttribute('data-wired', 'true')
   }
 }
 
-async function runMobileRoutes(numVehicles: number) {
+async function runMobileRoutes(numVehicles: number, depotFacilityId?: string) {
   const resultBox = document.getElementById('mobile-result')
   const tableBox = document.getElementById('mobile-routes-table')
   if (!resultBox || !tableBox) return
   resultBox.textContent = 'Computing routes...'
   tableBox.innerHTML = ''
 
+  const params = new URLSearchParams({ num_vehicles: String(numVehicles) })
+  if (depotFacilityId) params.set('depot_facility_id', depotFacilityId)
   const data = await fetchJson<MobileRoutesResult>(
-    `${API_BASE}/planning/mobile-routes?num_vehicles=${encodeURIComponent(numVehicles)}`
+    `${API_BASE}/planning/mobile-routes?${params.toString()}`
   )
   if (!data || !data.routes.length) {
     resultBox.textContent = 'Could not compute routes. Check backend.'
@@ -368,11 +411,18 @@ async function runMobileRoutes(numVehicles: number) {
   document.getElementById('mobile-save-scenario-btn')?.addEventListener('click', async () => {
     const name = prompt('Scenario name')
     if (!name) return
+    const totalDistance = data.routes.reduce((sum, r) => sum + (r.total_distance_km || 0), 0)
     const body = {
       name,
       type: 'mobile_routes',
-      results_summary: { depot_lat: data.depot_lat, depot_lon: data.depot_lon, num_routes: data.routes.length },
-      route_results: data.routes.map((r) => ({ vehicle_id: r.vehicle_id, stops: r.stops })),
+      results_summary: {
+        depot_lat: data.depot_lat,
+        depot_lon: data.depot_lon,
+        num_routes: data.routes.length,
+        num_vehicles: data.routes.length,
+        total_distance_km: Number.isFinite(totalDistance) ? Number(totalDistance.toFixed(2)) : 0,
+      },
+      route_results: data.routes.map((r) => ({ vehicle_id: r.vehicle_id, stops: r.stops, total_distance_km: r.total_distance_km })),
     }
     const res = await fetchWithAuth(`${API_BASE}/scenarios`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
     if (res.ok) alert('Scenario saved.')
@@ -625,6 +675,120 @@ async function loadDemandTimeseries(facilityId: string, facilityName: string) {
 type ScenarioListItem = { id: string; name: string; description: string | null; type: string; created_at: string; results_summary: Record<string, unknown> | null }
 let scenariosListCache: ScenarioListItem[] = []
 
+type ScenarioDetail = {
+  id: string
+  name: string
+  description: string | null
+  type: string
+  created_at: string
+  created_by?: string | null
+  inputs?: Record<string, unknown> | null
+  results_summary: Record<string, unknown> | null
+  facility_results?: { region_id: string; region_name: string; centroid_lat: number; centroid_lon: number }[] | null
+  route_results?: { vehicle_id: number; stops: RouteStopDto[]; total_distance_km?: number }[] | null
+}
+
+function getMobileScenarioMetrics(detail: ScenarioDetail): {
+  vehicles: number
+  stops: number
+  uniqueRegions: number
+  totalDistanceKm: number | null
+  longestRouteKm: number | null
+  shortestRouteKm: number | null
+  balanceRatio: number | null
+} {
+  const rs = detail.results_summary ?? {}
+  const depotLat = toNum(rs['depot_lat'], NaN)
+  const depotLon = toNum(rs['depot_lon'], NaN)
+  const hasDepot = Number.isFinite(depotLat) && Number.isFinite(depotLon)
+  const routes = detail.route_results ?? []
+
+  const routeDistances = routes.map((r) => {
+    const declared = (r as any).total_distance_km
+    if (typeof declared === 'number' && Number.isFinite(declared)) return declared
+    if (!hasDepot) return NaN
+    const points: [number, number][] = [[depotLat, depotLon]]
+    ;(r.stops ?? []).forEach((s) => points.push([s.latitude, s.longitude]))
+    points.push([depotLat, depotLon])
+    let total = 0
+    for (let i = 0; i < points.length - 1; i++) {
+      total += haversineKm(points[i][0], points[i][1], points[i + 1][0], points[i + 1][1])
+    }
+    return total
+  }).filter((d) => Number.isFinite(d)) as number[]
+
+  const totalStops = routes.reduce((sum, r) => sum + (r.stops?.length ?? 0), 0)
+  const unique = new Set<string>()
+  routes.forEach((r) => r.stops?.forEach((s) => unique.add(s.region_id)))
+
+  const totalDistanceKm = routeDistances.length ? routeDistances.reduce((a, b) => a + b, 0) : null
+  const longestRouteKm = routeDistances.length ? Math.max(...routeDistances) : null
+  const shortestRouteKm = routeDistances.length ? Math.min(...routeDistances) : null
+  const balanceRatio =
+    routeDistances.length && shortestRouteKm && shortestRouteKm > 0
+      ? longestRouteKm! / shortestRouteKm
+      : null
+
+  return {
+    vehicles: routes.length || toNum(rs['num_vehicles'], 0),
+    stops: totalStops,
+    uniqueRegions: unique.size,
+    totalDistanceKm,
+    longestRouteKm,
+    shortestRouteKm,
+    balanceRatio,
+  }
+}
+
+function scenarioCardHtml(detail: ScenarioDetail): string {
+  const rs = detail.results_summary ?? {}
+
+  if (detail.type === 'facility_plan') {
+    const numNew = toNum(rs['num_new'], detail.facility_results?.length ?? 0)
+    const beforeAvg = toNum(rs['before_avg_distance_km'], NaN)
+    const afterAvg = toNum(rs['after_avg_distance_km'], NaN)
+    const beforeMax = toNum(rs['before_max_distance_km'], NaN)
+    const afterMax = toNum(rs['after_max_distance_km'], NaN)
+    const worstImp = toNum(rs['worst_region_improvement_km'], NaN)
+    const chosenCount = detail.facility_results?.length ?? 0
+    return `
+      <div class="compare-metrics">
+        <ul class="metric-list">
+          <li><strong>New facilities:</strong> ${numNew || '—'} (saved sites: ${chosenCount})</li>
+          <li><strong>Avg distance:</strong> ${Number.isFinite(beforeAvg) ? formatKm(beforeAvg) : '—'} → ${Number.isFinite(afterAvg) ? formatKm(afterAvg) : '—'}</li>
+          <li><strong>Worst distance:</strong> ${Number.isFinite(beforeMax) ? formatKm(beforeMax) : '—'} → ${Number.isFinite(afterMax) ? formatKm(afterMax) : '—'}</li>
+          <li><strong>Equity improvement (worst-off):</strong> ${Number.isFinite(worstImp) ? formatKm(worstImp) : '—'}</li>
+        </ul>
+        <p class="map-legend">Interpretation: lower distances = better access; “worst-off improvement” shows equity gain.</p>
+      </div>
+    `
+  }
+
+  if (detail.type === 'mobile_routes') {
+    const m = getMobileScenarioMetrics(detail)
+    const total = m.totalDistanceKm
+    const avgPerVehicle = total != null && m.vehicles ? total / m.vehicles : null
+    return `
+      <div class="compare-metrics">
+        <ul class="metric-list">
+          <li><strong>Vehicles:</strong> ${m.vehicles || '—'}</li>
+          <li><strong>Stops:</strong> ${m.stops} (unique regions: ${m.uniqueRegions})</li>
+          <li><strong>Total travel:</strong> ${total != null ? formatKm(total) : '—'}</li>
+          <li><strong>Avg per vehicle:</strong> ${avgPerVehicle != null ? formatKm(avgPerVehicle) : '—'}</li>
+          <li><strong>Longest route:</strong> ${m.longestRouteKm != null ? formatKm(m.longestRouteKm) : '—'}</li>
+          <li><strong>Shortest route:</strong> ${m.shortestRouteKm != null ? formatKm(m.shortestRouteKm) : '—'}</li>
+          <li><strong>Workload balance (max/min):</strong> ${m.balanceRatio != null ? m.balanceRatio.toFixed(2) + '×' : '—'}</li>
+        </ul>
+        <p class="map-legend">Interpretation: more vehicles usually reduces distance per vehicle (faster service), but costs more resources.</p>
+      </div>
+    `
+  }
+
+  // Fallback: show raw summary keys
+  const lines = Object.entries(rs).map(([k, v]) => `${k}: ${typeof v === 'number' ? (v as number).toFixed(2) : String(v)}`)
+  return `<div class="compare-metrics">${lines.length ? lines.join('<br/>') : '—'}</div>`
+}
+
 async function initScenariosIfNeeded() {
   const listEl = document.getElementById('scenarios-list')
   if (!listEl) return
@@ -663,22 +827,24 @@ async function initScenariosIfNeeded() {
         return
       }
       const [detailA, detailB] = await Promise.all([
-        fetchJson<{ name: string; type: string; results_summary: Record<string, unknown> | null }>(`${API_BASE}/scenarios/${idA}`),
-        fetchJson<{ name: string; type: string; results_summary: Record<string, unknown> | null }>(`${API_BASE}/scenarios/${idB}`),
+        fetchJson<ScenarioDetail>(`${API_BASE}/scenarios/${idA}`),
+        fetchJson<ScenarioDetail>(`${API_BASE}/scenarios/${idB}`),
       ])
       if (!detailA || !detailB) {
         compareResult.innerHTML = '<p>Could not load one or both scenarios.</p>'
         return
       }
-      const fmt = (o: Record<string, unknown> | null) => {
-        if (!o) return '—'
-        const lines = Object.entries(o).map(([k, v]) => `${k}: ${typeof v === 'number' ? (v as number).toFixed(2) : String(v)}`)
-        return lines.join('<br/>')
-      }
+
+      const note =
+        detailA.type !== detailB.type
+          ? `<p class="map-legend"><strong>Note:</strong> You are comparing different scenario types. Metrics may not be directly comparable.</p>`
+          : ''
+
       compareResult.innerHTML = `
+        ${note}
         <div class="compare-grid">
-          <div class="panel"><h3>${detailA.name}</h3><p class="compare-type">${detailA.type}</p><div class="compare-metrics">${fmt(detailA.results_summary)}</div></div>
-          <div class="panel"><h3>${detailB.name}</h3><p class="compare-type">${detailB.type}</p><div class="compare-metrics">${fmt(detailB.results_summary)}</div></div>
+          <div class="panel"><h3>${detailA.name}</h3><p class="compare-type">${detailA.type}</p>${scenarioCardHtml(detailA)}</div>
+          <div class="panel"><h3>${detailB.name}</h3><p class="compare-type">${detailB.type}</p>${scenarioCardHtml(detailB)}</div>
         </div>
       `
     })
@@ -1058,17 +1224,18 @@ async function init() {
       <div id="mobile-view" hidden>
         <h1>Mobile Units & Routes</h1>
         <p class="map-legend">
-          Plan routes for mobile health units visiting region centroids. Depot is the first facility.
+          Plan routes for mobile health units visiting region centroids. Depot is the first facility (or a facility you choose). Increasing vehicles usually reduces distance per vehicle (faster coverage), but requires more resources.
         </p>
         <section class="layout-grid mobile-layout" aria-label="Mobile routing">
           <section class="panel" aria-label="Routing controls">
             <h2>Run routing</h2>
-            <label for="mobile-num-vehicles">Number of vehicles:</label>
-            <select id="mobile-num-vehicles">
-              <option value="1">1</option>
-              <option value="2" selected>2</option>
-              <option value="3">3</option>
+            <label for="mobile-num-vehicles">Number of vehicles (1–10):</label>
+            <input id="mobile-num-vehicles" type="number" min="1" max="10" value="2" />
+            <label for="mobile-depot">Depot facility:</label>
+            <select id="mobile-depot">
+              <option value="">Default (first facility)</option>
             </select>
+            <p class="map-legend">Choose where vehicles start and end their route. Default is the first facility in the data.</p>
             <button id="mobile-run-btn" class="primary-btn">Run routing</button>
             <div id="mobile-result" class="planning-result-box">Choose number of vehicles and click Run routing.</div>
             <div id="mobile-routes-table"></div>
@@ -1082,7 +1249,9 @@ async function init() {
 
       <div id="scenarios-view" hidden>
         <h1>Scenarios</h1>
-        <p class="map-legend">Saved facility plans and mobile route plans.</p>
+        <p class="map-legend">
+          Save plans so you can compare trade-offs. For Mobile Units, we compare total travel and workload balance. For Facility Planning, we compare how much average/worst access improves.
+        </p>
         <div id="scenarios-list">Loading…</div>
         <section class="panel scenarios-compare" aria-label="Compare scenarios">
           <h2>Compare two scenarios</h2>
