@@ -1,6 +1,22 @@
 import './style.css'
+import { supabase } from './supabase'
 
 const API_BASE = 'http://localhost:8000'
+
+type AuthUser = { user_id: string; email: string; role: string }
+let currentUser: AuthUser | null = null
+
+async function getAccessToken(): Promise<string | null> {
+  const { data } = await supabase.auth.getSession()
+  return data.session?.access_token ?? null
+}
+
+async function fetchWithAuth(url: string, options?: RequestInit): Promise<Response> {
+  const token = await getAccessToken()
+  const headers = new Headers(options?.headers)
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+  return fetch(url, { ...options, headers })
+}
 
 type Region = {
   id: string
@@ -48,9 +64,9 @@ let planningLayers: { remove(): void }[] = []
 let mobileMap: ReturnType<Window['L']['map']> | null = null
 let mobileLayers: { remove(): void }[] = []
 
-async function fetchJson<T>(url: string): Promise<T | null> {
+async function fetchJson<T>(url: string, options?: RequestInit): Promise<T | null> {
   try {
-    const res = await fetch(url)
+    const res = await fetchWithAuth(url, options)
     if (!res.ok) return null
     return (await res.json()) as T
   } catch {
@@ -246,7 +262,7 @@ async function runFacilityPlanning(numNew: number, prioritizeUnderserved: boolea
       results_summary: plan,
       facility_results: chosen.map((c) => ({ region_id: c.region_id, region_name: c.region_name, centroid_lat: c.centroid_lat, centroid_lon: c.centroid_lon })),
     }
-    const res = await fetch(`${API_BASE}/scenarios`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    const res = await fetchWithAuth(`${API_BASE}/scenarios`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
     if (res.ok) alert('Scenario saved.')
     else alert('Failed to save scenario.')
   })
@@ -358,7 +374,7 @@ async function runMobileRoutes(numVehicles: number) {
       results_summary: { depot_lat: data.depot_lat, depot_lon: data.depot_lon, num_routes: data.routes.length },
       route_results: data.routes.map((r) => ({ vehicle_id: r.vehicle_id, stops: r.stops })),
     }
-    const res = await fetch(`${API_BASE}/scenarios`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    const res = await fetchWithAuth(`${API_BASE}/scenarios`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
     if (res.ok) alert('Scenario saved.')
     else alert('Failed to save scenario.')
   })
@@ -697,7 +713,7 @@ async function initAdminIfNeeded() {
       if (!rInput.files?.[0]) return
       const form = new FormData()
       form.append('file', rInput.files[0])
-      const res = await fetch(`${API_BASE}/admin/upload/regions`, { method: 'POST', body: form })
+      const res = await fetchWithAuth(`${API_BASE}/admin/upload/regions`, { method: 'POST', body: form })
       const data = await res.json().catch(() => ({}))
       alert(data.uploaded != null ? `Uploaded ${data.uploaded} rows` : 'Upload failed')
     })
@@ -709,7 +725,7 @@ async function initAdminIfNeeded() {
       if (!fInput.files?.[0]) return
       const form = new FormData()
       form.append('file', fInput.files[0])
-      const res = await fetch(`${API_BASE}/admin/upload/facilities`, { method: 'POST', body: form })
+      const res = await fetchWithAuth(`${API_BASE}/admin/upload/facilities`, { method: 'POST', body: form })
       const data = await res.json().catch(() => ({}))
       alert(data.uploaded != null ? `Uploaded ${data.uploaded} rows` : 'Upload failed')
     })
@@ -721,7 +737,7 @@ async function initAdminIfNeeded() {
       if (!dInput.files?.[0]) return
       const form = new FormData()
       form.append('file', dInput.files[0])
-      const res = await fetch(`${API_BASE}/admin/upload/demand`, { method: 'POST', body: form })
+      const res = await fetchWithAuth(`${API_BASE}/admin/upload/demand`, { method: 'POST', body: form })
       const data = await res.json().catch(() => ({}))
       alert(data.uploaded != null ? `Uploaded ${data.uploaded} rows` : 'Upload failed')
     })
@@ -820,6 +836,102 @@ async function renderDashboard(
   }
 }
 
+function renderLoginScreen() {
+  if (!app) return
+  app.innerHTML = `
+    <main class="app-root auth-screen">
+      <div class="auth-card">
+        <h1>Sign in</h1>
+        <p class="auth-subtitle">Healthcare Access Inequality Analysis & Planning System</p>
+        <form id="login-form" class="auth-form">
+          <label for="login-email">Email</label>
+          <input type="email" id="login-email" required placeholder="you@example.com" />
+          <label for="login-password">Password</label>
+          <input type="password" id="login-password" required />
+          <p id="login-error" class="auth-error" hidden></p>
+          <button type="submit" class="primary-btn">Sign in</button>
+        </form>
+        <p class="auth-switch">Don't have an account? <a href="#" id="auth-go-signup">Sign up</a></p>
+      </div>
+    </main>
+  `
+  const form = document.getElementById('login-form')
+  const emailEl = document.getElementById('login-email') as HTMLInputElement
+  const passwordEl = document.getElementById('login-password') as HTMLInputElement
+  const errEl = document.getElementById('login-error')
+  form?.addEventListener('submit', async (e) => {
+    e.preventDefault()
+    if (errEl) { errEl.hidden = true; errEl.textContent = '' }
+    const { error } = await supabase.auth.signInWithPassword({ email: emailEl.value.trim(), password: passwordEl.value })
+    if (error) {
+      if (errEl) { errEl.hidden = false; errEl.textContent = error.message }
+      return
+    }
+    void bootstrap()
+  })
+  document.getElementById('auth-go-signup')?.addEventListener('click', (e) => {
+    e.preventDefault()
+    renderSignupScreen()
+  })
+}
+
+function renderSignupScreen() {
+  if (!app) return
+  app.innerHTML = `
+    <main class="app-root auth-screen">
+      <div class="auth-card">
+        <h1>Sign up</h1>
+        <p class="auth-subtitle">Create an account (email + password)</p>
+        <form id="signup-form" class="auth-form">
+          <label for="signup-email">Email</label>
+          <input type="email" id="signup-email" required placeholder="you@example.com" />
+          <label for="signup-password">Password</label>
+          <input type="password" id="signup-password" required minlength="6" />
+          <p id="signup-error" class="auth-error" hidden></p>
+          <button type="submit" class="primary-btn">Sign up</button>
+        </form>
+        <p class="auth-switch">Already have an account? <a href="#" id="auth-go-login">Sign in</a></p>
+      </div>
+    </main>
+  `
+  const form = document.getElementById('signup-form')
+  const emailEl = document.getElementById('signup-email') as HTMLInputElement
+  const passwordEl = document.getElementById('signup-password') as HTMLInputElement
+  const errEl = document.getElementById('signup-error')
+  form?.addEventListener('submit', async (e) => {
+    e.preventDefault()
+    if (errEl) { errEl.hidden = true; errEl.textContent = '' }
+    const { error } = await supabase.auth.signUp({ email: emailEl.value.trim(), password: passwordEl.value })
+    if (error) {
+      if (errEl) { errEl.hidden = false; errEl.textContent = error.message }
+      return
+    }
+    void bootstrap()
+  })
+  document.getElementById('auth-go-login')?.addEventListener('click', (e) => {
+    e.preventDefault()
+    renderLoginScreen()
+  })
+}
+
+async function bootstrap() {
+  if (!app) return
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session) {
+    renderLoginScreen()
+    return
+  }
+  const token = session.access_token
+  const res = await fetchWithAuth(`${API_BASE}/auth/me`)
+  if (!res.ok) {
+    currentUser = { user_id: session.user.id, email: session.user.email ?? '', role: 'viewer' }
+  } else {
+    const me = await res.json() as AuthUser
+    currentUser = me
+  }
+  init()
+}
+
 async function init() {
   if (!app) return
 
@@ -835,6 +947,7 @@ async function init() {
         <a href="#" id="nav-reports" class="nav-link"><span class="nav-icon">📄</span><span>Reports</span></a>
         <a href="#" id="nav-admin" class="nav-link"><span class="nav-icon">⚙️</span><span>Admin</span></a>
         <a href="#" id="nav-help" class="nav-link"><span class="nav-icon">❓</span><span>Help</span></a>
+        <span class="nav-user">${currentUser?.email ?? ''} <button type="button" id="nav-logout" class="link-btn">Logout</button></span>
       </nav>
 
       <div id="dashboard-view">
@@ -965,7 +1078,7 @@ async function init() {
             <div id="mobile-map"></div>
           </section>
         </section>
-      </div>
+    </div>
 
       <div id="scenarios-view" hidden>
         <h1>Scenarios</h1>
@@ -1031,7 +1144,7 @@ async function init() {
         <p><strong>Facility Planning:</strong> Suggests new facility sites to reduce population-weighted distance; optionally prioritize underserved regions.</p>
         <p><strong>Mobile Units & Routes:</strong> VRP routes from depot (first facility) to region centroids.</p>
         <p><strong>Scenarios:</strong> Save facility or route plans for comparison.</p>
-      </div>
+  </div>
     </main>
   `
 
@@ -1077,6 +1190,11 @@ async function init() {
     e.preventDefault()
     showView('help')
   })
+  document.getElementById('nav-logout')?.addEventListener('click', async () => {
+    await supabase.auth.signOut()
+    currentUser = null
+    renderLoginScreen()
+  })
 }
 
-void init()
+void bootstrap()
